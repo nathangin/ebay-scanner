@@ -1,0 +1,38 @@
+{
+  "discount_threshold": 30,
+  "search_terms": [
+    "pokemon card single",
+    "pokemon holo card",
+    "pokemon rare card",
+    "pokemon card nm",
+    "pokemon vintage card",
+    "pokemon psa 10",
+    "pokemon psa 9",
+    "pokemon bgs graded card"
+  ],
+  "condition_multipliers": {
+    "NM": 1.00,
+    "LP": 0.70,
+    "MP": 0.45,
+    "HP": 0.25,
+    "DMG": 0.10,
+    "Unknown": 0.70
+  },
+  "grade_multipliers": {
+    "PSA 10": 3.0,
+    "PSA 9":  1.5,
+    "PSA 8":  1.0,
+    "PSA 7":  0.75,
+    "BGS 9.5": 4.0,
+    "BGS 9":  2.0,
+    "BGS 8.5": 1.2,
+    "CGC 10": 2.5,
+    "CGC 9":  1.4,
+    "SGC 10": 2.0,
+    "SGC 9":  1.2
+  },
+  "poll_interval_seconds": 300,
+  "max_listings_per_query": 25,
+  "fetch_listing_condition": false,
+  "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+}

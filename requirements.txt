@@ -1,0 +1,6 @@
+playwright
+requests
+beautifulsoup4
+rich
+streamlit>=1.28
+pandas
