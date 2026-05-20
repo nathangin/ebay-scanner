@@ -138,10 +138,11 @@ def _scrape_condition_from_page(url):
     return None
 
 
-def fetch_ebay_listings(search_term, max_results=25, user_agent=None, fetch_condition=False, sort="10"):
+def fetch_ebay_listings(search_term, max_results=25, user_agent=None, fetch_condition=False, sort="10", filter_bundles=True):
     """Return listing dicts (title, url, price, ebay_condition_raw).
 
     sort: "10"=newly listed, "15"=price+shipping low→high
+    filter_bundles: set False when searching for boxes/sealed product (skips the lot/bundle/box filter)
     Returns an empty list on any error so the main loop keeps running.
     """
     ua = user_agent or _DEFAULT_UA
@@ -178,7 +179,7 @@ def fetch_ebay_listings(search_term, max_results=25, user_agent=None, fetch_cond
         if price is None or price < 0.50:
             continue
 
-        if _SKIP_RE.search(title):
+        if filter_bundles and _SKIP_RE.search(title):
             continue
 
         condition_raw = None
