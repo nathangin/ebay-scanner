@@ -1,0 +1,63 @@
+[
+  {
+    "name": "Southern Islands",
+    "type": "tcg_cards",
+    "deal_threshold": 25,
+    "cards": [
+      {"card_id": "si1-1",  "name": "Mew",        "search": "Southern Islands Mew pokemon card"},
+      {"card_id": "si1-2",  "name": "Pidgeot",    "search": "Southern Islands Pidgeot pokemon card"},
+      {"card_id": "si1-3",  "name": "Onix",       "search": "Southern Islands Onix pokemon card"},
+      {"card_id": "si1-4",  "name": "Togepi",     "search": "Southern Islands Togepi pokemon card"},
+      {"card_id": "si1-5",  "name": "Ivysaur",    "search": "Southern Islands Ivysaur pokemon card"},
+      {"card_id": "si1-6",  "name": "Raticate",   "search": "Southern Islands Raticate pokemon card"},
+      {"card_id": "si1-7",  "name": "Ledyba",     "search": "Southern Islands Ledyba pokemon card"},
+      {"card_id": "si1-8",  "name": "Jigglypuff", "search": "Southern Islands Jigglypuff pokemon card"},
+      {"card_id": "si1-9",  "name": "Butterfree", "search": "Southern Islands Butterfree pokemon card"},
+      {"card_id": "si1-10", "name": "Tentacruel", "search": "Southern Islands Tentacruel pokemon card"},
+      {"card_id": "si1-11", "name": "Marill",     "search": "Southern Islands Marill pokemon card"},
+      {"card_id": "si1-12", "name": "Lapras",     "search": "Southern Islands Lapras pokemon card"},
+      {"card_id": "si1-13", "name": "Exeggutor",  "search": "Southern Islands Exeggutor pokemon card"},
+      {"card_id": "si1-14", "name": "Slowking",   "search": "Southern Islands Slowking pokemon card"},
+      {"card_id": "si1-15", "name": "Wartortle",  "search": "Southern Islands Wartortle pokemon card"},
+      {"card_id": "si1-16", "name": "Lickitung",  "search": "Southern Islands Lickitung pokemon card"},
+      {"card_id": "si1-17", "name": "Vileplume",  "search": "Southern Islands Vileplume pokemon card"},
+      {"card_id": "si1-18", "name": "Primeape",   "search": "Southern Islands Primeape pokemon card"}
+    ]
+  },
+  {
+    "name": "Chinese Booster Boxes",
+    "type": "sealed_boxes",
+    "deal_threshold": 15,
+    "items": [
+      {"name": "Gem Pack",           "pc_price": 68.70,  "search": "Pokemon Chinese Gem Pack booster box sealed"},
+      {"name": "Gem Pack 2",         "pc_price": 71.30,  "search": "Pokemon Chinese Gem Pack 2 booster box sealed"},
+      {"name": "Gem Pack 3",         "pc_price": 61.00,  "search": "Pokemon Chinese Gem Pack 3 booster box sealed"},
+      {"name": "Gem Pack 4",         "pc_price": 34.98,  "search": "Pokemon Chinese Gem Pack 4 booster box sealed"},
+      {"name": "Gem Pack 5",         "pc_price": 47.38,  "search": "Pokemon Chinese Gem Pack 5 booster box sealed"},
+      {"name": "151 Collect Box",    "pc_price": 64.50,  "search": "Pokemon Chinese 151 Collect booster box sealed"},
+      {"name": "151 Surprise Jumbo", "pc_price": 121.61, "search": "Pokemon Chinese 151 Surprise Jumbo booster box sealed"},
+      {"name": "151 Surprise Slim",  "pc_price": 53.00,  "search": "Pokemon Chinese 151 Surprise Slim booster box sealed"},
+      {"name": "151 Volume 4",       "pc_price": 76.33,  "search": "Pokemon Chinese 151 Volume 4 booster box sealed"},
+      {"name": "CSV3C Box",          "pc_price": 65.52,  "search": "Pokemon Chinese CSV3C booster box sealed"},
+      {"name": "S8A Box",            "pc_price": 92.86,  "search": "Pokemon Chinese S8A booster box sealed"},
+      {"name": "CSM25C Box",         "pc_price": 129.95, "search": "Pokemon Chinese CSM25C booster box sealed"}
+    ]
+  },
+  {
+    "name": "Birthday Pikachu",
+    "type": "tcg_cards",
+    "deal_threshold": 25,
+    "cards": [
+      {"card_id": "bwp-BW94", "name": "Birthday Pikachu", "search": "Birthday Pikachu pokemon promo card BW94"}
+    ]
+  },
+  {
+    "name": "Yuka Morii",
+    "type": "artist_search",
+    "deal_threshold": 25,
+    "search_terms": [
+      "yuka morii pokemon card holo",
+      "yuka morii pokemon card rare"
+    ]
+  }
+]
