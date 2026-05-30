@@ -7,6 +7,10 @@ set_names.json
 deals.db
 deals.csv
 deals_only.csv
+cost_to_collect.csv
+
+# Price cache — run cost_to_collect.py --refresh to update
+price_cache.json
 
 # Python
 __pycache__/
