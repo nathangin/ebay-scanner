@@ -50,17 +50,26 @@ def _cheapest_price(card):
     return None
 
 
-def fetch_all_cards(force_refresh=False):
-    if not force_refresh and os.path.exists(CACHE_FILE):
-        print(f"Loading cached data from {CACHE_FILE}  (pass --refresh to re-fetch)...")
-        with open(CACHE_FILE, "r", encoding="utf-8") as fh:
-            return json.load(fh)
+def _load_cache():
+    """Return (cards, is_complete). Treats old bare-list caches as incomplete."""
+    if not os.path.exists(CACHE_FILE):
+        return [], False
+    with open(CACHE_FILE, "r", encoding="utf-8") as fh:
+        data = json.load(fh)
+    if isinstance(data, list):
+        return data, False          # old / interrupted format
+    return data.get("cards", []), data.get("complete", False)
 
-    print("Fetching all card prices from pokemontcg.io (~2 min)...")
-    all_cards = []
-    page      = 1
 
-    while True:
+def _save_cache(cards, complete=False):
+    with open(CACHE_FILE, "w", encoding="utf-8") as fh:
+        json.dump({"complete": complete, "cards": cards}, fh)
+
+
+def _fetch_page(page):
+    """Fetch one page, retrying up to 3 times with backoff. Returns (cards, total) or raises."""
+    last_exc = None
+    for attempt in range(3):
         try:
             resp = requests.get(
                 BASE_URL,
@@ -70,28 +79,62 @@ def fetch_all_cards(force_refresh=False):
                     "page":     page,
                 },
                 headers={"Accept": "application/json"},
-                timeout=30,
+                timeout=60,
             )
             resp.raise_for_status()
-            data  = resp.json()
-            cards = data.get("data", [])
-            if not cards:
-                break
-            all_cards.extend(cards)
-            total = data.get("totalCount", "?")
-            print(f"  Page {page}: {len(all_cards)}/{total} cards", end="\r", flush=True)
-            if isinstance(total, int) and len(all_cards) >= total:
-                break
-            page += 1
-            time.sleep(0.25)
+            data = resp.json()
+            return data.get("data", []), data.get("totalCount", 0)
         except Exception as exc:
-            print(f"\n  Error on page {page}: {exc}")
+            last_exc = exc
+            wait = 5 * (attempt + 1)       # 5 s, 10 s, 15 s
+            print(f"\n  Page {page} error (attempt {attempt+1}/3, retry in {wait}s): {exc}", flush=True)
+            time.sleep(wait)
+    raise last_exc
+
+
+def fetch_all_cards(force_refresh=False):
+    cached, complete = _load_cache()
+
+    if complete and not force_refresh:
+        print(f"Loading cached data ({len(cached):,} cards)  (pass --refresh to re-fetch)...")
+        return cached
+
+    if cached and not force_refresh:
+        resume_page = len(cached) // PAGE_SIZE + 1
+        print(f"Resuming incomplete fetch from page {resume_page} ({len(cached):,} cards already cached)...")
+        all_cards = list(cached)
+    else:
+        print("Fetching all card prices from pokemontcg.io (this takes a few minutes)...")
+        all_cards = []
+        resume_page = 1
+
+    page  = resume_page
+    total = 0
+
+    while True:
+        try:
+            cards, total = _fetch_page(page)
+        except Exception as exc:
+            print(f"\n  Page {page} failed after 3 attempts, stopping: {exc}")
+            _save_cache(all_cards, complete=False)
+            print(f"  Progress saved ({len(all_cards):,} cards). Re-run to resume.")
+            return all_cards
+
+        if not cards:
             break
 
-    print(f"\n  Done — {len(all_cards)} cards fetched.")
-    with open(CACHE_FILE, "w", encoding="utf-8") as fh:
-        json.dump(all_cards, fh)
-    print(f"  Saved to {CACHE_FILE}")
+        all_cards.extend(cards)
+        print(f"  Page {page}: {len(all_cards):,}/{total:,} cards", end="\r", flush=True)
+
+        if total and len(all_cards) >= total:
+            break
+
+        page += 1
+        time.sleep(0.5)
+
+    done = (total == 0) or (len(all_cards) >= total)
+    _save_cache(all_cards, complete=done)
+    print(f"\n  Done — {len(all_cards):,} cards fetched.  Saved to {CACHE_FILE}")
     return all_cards
 
 
