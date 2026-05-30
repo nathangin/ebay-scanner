@@ -169,24 +169,35 @@ def build_summary(all_cards):
 
 
 def print_table(rows, top_n=30):
-    w = 65
+    # Fully priced = every card has a price; at least partial = 1+ cards priced
+    fully_priced = [r for r in rows if r["priced_cards"] == r["total_cards"] and r["total_cost"] > 0]
+    any_priced   = [r for r in rows if r["total_cost"] > 0]
+
+    w = 70
     print(f"\n{'='*w}")
-    print(f"  {'Pokemon':<28} {'Cards':>5} {'Priced':>6} {'Total Cost':>10}")
+    print(f"  {'Pokemon':<30} {'Cards':>5} {'Priced':>6} {'Total Cost':>10}  Note")
     print(f"{'='*w}")
 
-    print("  Cheapest complete collection")
-    print(f"  {'-'*62}")
-    for r in rows[:top_n]:
-        note = f"  ({r['unpriced']} no price)" if r["unpriced"] else ""
-        print(f"  {r['name']:<28} {r['total_cards']:>5} {r['priced_cards']:>6}  ${r['total_cost']:>8.2f}{note}")
+    print("  -- Cheapest complete collection (all cards have prices) --")
+    print(f"  {'-'*67}")
+    for r in fully_priced[:top_n]:
+        print(f"  {r['name']:<30} {r['total_cards']:>5} {r['priced_cards']:>6}  ${r['total_cost']:>8.2f}")
 
-    print(f"\n  Most expensive complete collection")
-    print(f"  {'-'*62}")
-    for r in reversed(rows[-top_n:]):
-        note = f"  ({r['unpriced']} no price)" if r["unpriced"] else ""
-        print(f"  {r['name']:<28} {r['total_cards']:>5} {r['priced_cards']:>6}  ${r['total_cost']:>8.2f}{note}")
+    print(f"\n  -- Cheapest (including partially priced) --")
+    print(f"  {'-'*67}")
+    for r in any_priced[:top_n]:
+        note = f"  ({r['unpriced']} missing)" if r["unpriced"] else ""
+        print(f"  {r['name']:<30} {r['total_cards']:>5} {r['priced_cards']:>6}  ${r['total_cost']:>8.2f}{note}")
 
-    print(f"\n  {len(rows)} unique Pokemon names across {sum(r['total_cards'] for r in rows)} cards")
+    print(f"\n  -- Most expensive complete collection --")
+    print(f"  {'-'*67}")
+    for r in reversed(any_priced[-top_n:]):
+        note = f"  ({r['unpriced']} missing)" if r["unpriced"] else ""
+        print(f"  {r['name']:<30} {r['total_cards']:>5} {r['priced_cards']:>6}  ${r['total_cost']:>8.2f}{note}")
+
+    no_price = len(rows) - len(any_priced)
+    print(f"\n  {len(rows)} unique Pokemon names | {sum(r['total_cards'] for r in rows):,} total cards")
+    print(f"  {no_price} Pokemon have no pricing data at all (excluded from tables above)")
 
 
 def print_pokemon_detail(rows, all_cards, name_filter):
