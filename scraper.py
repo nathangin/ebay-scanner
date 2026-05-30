@@ -8,6 +8,7 @@ Selectors confirmed against live eBay search pages (May 2026):
 """
 import atexit
 import re
+import statistics
 import time
 from urllib.parse import urlencode, urlparse
 
@@ -198,3 +199,73 @@ def fetch_ebay_listings(search_term, max_results=25, user_agent=None, fetch_cond
             break
 
     return results
+
+
+_GRADED_RE = re.compile(r"\bpsa\b|\bbgs\b|\bcgc\b|\bsgc\b|\bgraded\b", re.I)
+
+
+def fetch_sold_price(search_term, max_results=12, user_agent=None):
+    """Search eBay completed/sold listings and return the median raw (ungraded) price.
+
+    Returns None if no valid sold prices found.
+    """
+    ua = user_agent or _DEFAULT_UA
+    params = {
+        "_nkw":        search_term,
+        "_sop":        "13",   # recently ended
+        "LH_Complete": "1",
+        "LH_Sold":     "1",
+        "_ipg":        "25",
+    }
+    url = "https://www.ebay.com/sch/i.html?" + urlencode(params)
+    ctx = _ensure_browser(ua)
+    page = ctx.new_page()
+    try:
+        page.goto(url, timeout=30_000, wait_until="domcontentloaded")
+        try:
+            page.wait_for_selector("li[id^=item]", timeout=8_000)
+        except Exception:
+            pass
+        html = page.content()
+    except Exception:
+        return None
+    finally:
+        page.close()
+
+    soup   = BeautifulSoup(html, "html.parser")
+    prices = []
+
+    for item in soup.select("li[id^=item]"):
+        title_el = item.select_one(".s-card__title")
+        price_el = item.select_one(".s-card__price")
+        if not title_el or not price_el:
+            continue
+
+        title = title_el.get_text(separator=" ", strip=True)
+        title = re.sub(r"\s*Opens in a new window or tab\s*", "", title, flags=re.I).strip()
+
+        if _GRADED_RE.search(title):
+            continue
+        if re.search(r"\bjapanese\b|\bJP\b", title, re.I):
+            continue
+        if _SKIP_RE.search(title):
+            continue
+
+        price_text = price_el.get_text(strip=True)
+        if " to " in price_text.lower():
+            continue
+        price = _parse_price(price_text)
+        if price and price > 0.25:
+            prices.append(price)
+
+        if len(prices) >= max_results:
+            break
+
+    if not prices:
+        return None
+
+    prices.sort()
+    # Trim top outlier if enough data
+    if len(prices) >= 4:
+        prices = prices[:-1]
+    return round(statistics.median(prices), 2)

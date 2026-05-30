@@ -6,9 +6,12 @@ Excludes trainer/energy/stadium cards using the supertype field.
 First run (or --refresh): fetches all ~20k cards from pokemontcg.io (~2-3 min).
 Subsequent runs load instantly from price_cache.json.
 
-Run: py cost_to_collect.py               full table, all Pokemon
-     py cost_to_collect.py pikachu        detail view for one Pokemon
-     py cost_to_collect.py --refresh      re-fetch prices from API
+Run: py cost_to_collect.py                 full table, all Pokemon
+     py cost_to_collect.py pikachu          detail view for one Pokemon
+     py cost_to_collect.py --refresh        re-fetch prices from API
+     py cost_to_collect.py --fill-missing   search eBay sold listings for cards
+                                            that have no TCGPlayer/CardMarket price
+                                            (slow — a few seconds per card)
 """
 import csv
 import io
@@ -23,10 +26,13 @@ import requests
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
-CACHE_FILE = "price_cache.json"
-OUTPUT_CSV = "cost_to_collect.csv"
-BASE_URL   = "https://api.pokemontcg.io/v2/cards"
-PAGE_SIZE  = 250
+CACHE_FILE      = "price_cache.json"
+FILL_CACHE_FILE = "price_fill_cache.json"   # eBay-sold prices for API-missing cards
+OUTPUT_CSV      = "cost_to_collect.csv"
+BASE_URL        = "https://api.pokemontcg.io/v2/cards"
+PAGE_SIZE       = 250
+
+_fill_cache: dict = {}   # card_id -> price (None = searched, not found)
 
 # All ungraded TCGPlayer variant keys — graded prices are not in this API
 _VARIANTS = (
@@ -38,26 +44,49 @@ _VARIANTS = (
 
 # ── price helper ───────────────────────────────────────────────────────────────
 
+def _load_fill_cache():
+    global _fill_cache
+    if os.path.exists(FILL_CACHE_FILE):
+        with open(FILL_CACHE_FILE, "r", encoding="utf-8") as fh:
+            _fill_cache = json.load(fh)
+
+
+def _save_fill_cache():
+    with open(FILL_CACHE_FILE, "w", encoding="utf-8") as fh:
+        json.dump(_fill_cache, fh)
+
+
 def _cheapest_price(card):
-    """Lowest ungraded market price across all variants for this card."""
+    """Lowest ungraded price for this card, trying every available source."""
+    # 1. TCGPlayer market or mid price (any variant)
     tcg = card.get("tcgplayer", {}).get("prices", {})
     prices = []
     for variant in _VARIANTS:
         entry = tcg.get(variant)
         if entry:
-            p = entry.get("market") or entry.get("mid")
+            p = entry.get("market") or entry.get("mid") or entry.get("low")
             if p and p > 0:
                 prices.append(float(p))
     if prices:
         return min(prices)
-    # Cardmarket fallback (European marketplace, also ungraded)
-    cm  = card.get("cardmarket", {}).get("prices", {})
-    avg = cm.get("averageSellPrice") or cm.get("trendPrice")
-    if avg and avg > 0:
-        return float(avg)
+
+    # 2. CardMarket — try every available price field (already in cache, no extra request)
+    cm = card.get("cardmarket", {}).get("prices", {})
+    for field in ("averageSellPrice", "trendPrice", "avg30", "avg7", "avg1",
+                  "lowPrice", "suggestedPrice"):
+        v = cm.get(field)
+        if v and v > 0:
+            return float(v)
+
+    # 3. eBay sold cache (populated by --fill-missing)
+    card_id = card.get("id")
+    if card_id and card_id in _fill_cache:
+        p = _fill_cache[card_id]
+        return float(p) if p is not None else None
+
     return None
-    # Cards with no price: usually very old commons, regional promos, or cards
-    # with no recent TCGPlayer sales — not graded; just no market data.
+    # Still None = no sales data anywhere: very old promos, cards never listed
+    # on TCGPlayer/CardMarket, or so rare eBay searches also come up empty.
 
 
 # ── name extraction ────────────────────────────────────────────────────────────
@@ -223,6 +252,58 @@ def fetch_all_cards(force_refresh=False):
     return all_cards
 
 
+# ── eBay sold fill ─────────────────────────────────────────────────────────────
+
+def fill_missing_prices(all_cards):
+    """For cards with no API price, look up recent eBay sold listings."""
+    from scraper import fetch_sold_price
+
+    candidates = [
+        c for c in all_cards
+        if c.get("supertype") == "Pokémon"
+        and _cheapest_price(c) is None
+        and c.get("id") not in _fill_cache
+    ]
+
+    if not candidates:
+        print("  No missing prices to fill — all Pokemon cards already have data.")
+        return
+
+    print(f"  Searching eBay sold listings for {len(candidates)} unpriced cards...")
+    print("  (This takes a few seconds per card. Press Ctrl+C to stop and save progress.)\n")
+    found = 0
+
+    try:
+        for i, card in enumerate(candidates):
+            name    = card.get("name", "")
+            set_nm  = card.get("set", {}).get("name", "")
+            number  = card.get("number", "")
+            card_id = card.get("id", "")
+
+            search = f"{name} {set_nm} {number} pokemon card"
+            print(f"  [{i+1}/{len(candidates)}] {name} ({set_nm} #{number}) ...", end="", flush=True)
+
+            price = fetch_sold_price(search)
+            _fill_cache[card_id] = price   # None = searched, nothing found
+            if price is not None:
+                found += 1
+                print(f" ${price:.2f}")
+            else:
+                print(" no sold data")
+
+            if (i + 1) % 20 == 0:
+                _save_fill_cache()
+                print(f"  -- progress saved ({found} found so far) --")
+
+            time.sleep(1)
+
+    except KeyboardInterrupt:
+        print("\n  Interrupted.")
+
+    _save_fill_cache()
+    print(f"\n  Done — filled {found}/{len(candidates)} prices.  Saved to {FILL_CACHE_FILE}")
+
+
 # ── analysis ───────────────────────────────────────────────────────────────────
 
 def build_summary(all_cards):
@@ -324,9 +405,15 @@ def print_pokemon_detail(by_base, name_filter):
 def main():
     args          = sys.argv[1:]
     force_refresh = "--refresh" in args
+    do_fill       = "--fill-missing" in args
     name_filter   = next((a for a in args if not a.startswith("--")), None)
 
+    _load_fill_cache()
     all_cards        = fetch_all_cards(force_refresh=force_refresh)
+
+    if do_fill:
+        fill_missing_prices(all_cards)
+
     rows, by_base    = build_summary(all_cards)
 
     if name_filter:
