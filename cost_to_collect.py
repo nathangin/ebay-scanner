@@ -96,7 +96,7 @@ _POSSESSIVE_RE = re.compile(r"^.+?'s\s+")
 
 # Prefixes that describe a TCG mechanic, not the species
 _PREFIX_RE = re.compile(
-    r"^(?:Dark|Light|Shadow|Shining|Rocket's|Team\s+Rocket's)\s+"
+    r"^(?:Dark|Light|Shadow|Shining|Radiant|Rocket's|Team\s+Rocket's)\s+"
     r"|^(?:Mega)\s+"
     r"|^M\s+(?=[A-Z])",   # "M Charizard-EX" — M before a capital
 )
@@ -107,7 +107,7 @@ _SUFFIX_RE = re.compile(
     r"|\s+(?:ex|EX|GX|V)\s*$"
     r"|-(?:EX|GX|VMAX|VSTAR|V)\s*$"
     r"|\s+LV\.[0-9X]+\s*$"
-    r"|\s+(?:SP|GL|FB|4|G|C)\s*$"
+    r"|\s+(?:SP|GL|FB|E4|4|G|C)\s*$"
     r"|\s+[★☆◇♦◆].*$"     # star/prism symbols and anything after
     r"|\s+δ.*$"              # delta species
     r"|\s+[A-Z]\s*$",        # single-letter form: Charizard X, Charizard Y, Unown A
