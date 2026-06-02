@@ -34,10 +34,27 @@ _SKIP_BOX_RE = re.compile(
 
 # ── group scanners ─────────────────────────────────────────────────────────────
 
+def _title_matches(title, card_name, must_contain=None):
+    """Return True only if the listing title actually mentions this card.
+
+    card_name   — Pokemon name must appear as a word in the title
+    must_contain — optional extra keyword (e.g. 'southern islands') that
+                   must also appear, used to reject same-Pokemon cards from
+                   wrong sets.
+    """
+    tl = title.lower()
+    if not re.search(r"\b" + re.escape(card_name.lower()) + r"\b", tl):
+        return False
+    if must_contain and must_contain.lower() not in tl:
+        return False
+    return True
+
+
 def scan_tcg_cards(group, pricer):
     """Each card has a card_id; price comes from TCGPlayer via pokemontcg.io."""
-    threshold = group.get("deal_threshold", 25)
-    results   = []
+    threshold    = group.get("deal_threshold", 25)
+    must_contain = group.get("title_must_contain")   # e.g. "southern islands"
+    results      = []
 
     for card in group["cards"]:
         card_id  = card["card_id"]
@@ -56,7 +73,11 @@ def scan_tcg_cards(group, pricer):
         found = skipped = 0
 
         for listing in listings:
-            if _SKIP_CARD_RE.search(listing["title"]):
+            title = listing["title"]
+            if _SKIP_CARD_RE.search(title):
+                skipped += 1
+                continue
+            if not _title_matches(title, name, must_contain):
                 skipped += 1
                 continue
             ebay_price = listing["price"]
@@ -70,7 +91,7 @@ def scan_tcg_cards(group, pricer):
                 "ebay_price": ebay_price,
                 "discount":   discount,
                 "url":        listing["url"],
-                "title":      listing["title"],
+                "title":      title,
                 "threshold":  threshold,
             })
             found += 1
