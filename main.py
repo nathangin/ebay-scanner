@@ -1,9 +1,16 @@
-"""eBay Pokemon card deal scanner — raw and PSA/BGS/CGC graded cards.
+"""eBay Pokemon card deal scanner — raw and PSA/BGS/CGC/SGC graded cards.
+
+Cycles through the search terms in config.json, matches each new eBay listing
+to a card in the pokemontcg.io catalog, prices it, and flags listings whose
+total cost (price + shipping) is at least `discount_threshold`% below fair
+value.  Results go to deals.db (SQLite), deals.csv and deals_only.csv.
 
 First run:
     python build_card_list.py   # one-time, ~2 minutes
     python main.py
 """
+from __future__ import annotations
+
 import csv
 import itertools
 import json
@@ -12,19 +19,29 @@ import sqlite3
 import sys
 import time
 from datetime import datetime, timezone
+from typing import Any
 
+import requests
+from dotenv import load_dotenv
 from rich.console import Console
 
-from matcher import CardMatcher, detect_condition, detect_grade
+from deals import resolve_multiplier, score_deal
+from ebay_api import CCG_INDIVIDUAL_CARDS_CATEGORY, EbayError, get_default_client
+from listings import (
+    FOREIGN_LANGUAGE_RE,
+    REPRODUCTION_RE,
+    add_condition_details,
+    fetch_ebay_listings,
+)
+from matcher import CATALOG_FILE, CardMatcher, MatchResult, classify_listing
 from prices import PriceLookup
-from scraper import fetch_ebay_listings
 
 DB_PATH       = "deals.db"
 CSV_ALL_PATH  = "deals.csv"
 CSV_DEAL_PATH = "deals_only.csv"
 CONFIG_PATH   = "config.json"
 
-_DEFAULT_CONFIG = {
+_DEFAULT_CONFIG: dict[str, Any] = {
     "discount_threshold": 30,
     "search_terms": [
         "pokemon card single",
@@ -49,15 +66,14 @@ _DEFAULT_CONFIG = {
     "poll_interval_seconds": 300,
     "max_listings_per_query": 25,
     "fetch_listing_condition": False,
-    "user_agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
-    ),
+    "ebay_category_ids": [CCG_INDIVIDUAL_CARDS_CATEGORY],
+    "discord_webhook_url": "",
 }
 
-_CSV_FIELDS = [
-    "url", "title", "parsed_card_name", "set_name", "card_number",
-    "match_confidence", "ebay_price", "tcg_market_price",
+# Column order for deals.db inserts and both CSV files.
+_FIELDS = [
+    "url", "item_id", "title", "parsed_card_name", "set_name", "card_number",
+    "match_confidence", "ebay_price", "shipping", "total_price", "tcg_market_price",
     "condition", "condition_multiplier", "fair_value", "discount_pct",
     "is_deal", "is_graded", "grading_company", "grade", "scraped_at",
 ]
@@ -67,34 +83,47 @@ console = Console()
 
 # ── config ────────────────────────────────────────────────────────────────────
 
-def load_config():
+def load_config(path: str = CONFIG_PATH) -> dict[str, Any]:
+    """Defaults overlaid with config.json (the multiplier tables are merged key by key)."""
     cfg = _DEFAULT_CONFIG.copy()
     cfg["condition_multipliers"] = _DEFAULT_CONFIG["condition_multipliers"].copy()
     cfg["grade_multipliers"]     = _DEFAULT_CONFIG["grade_multipliers"].copy()
-    if os.path.exists(CONFIG_PATH):
-        with open(CONFIG_PATH, "r", encoding="utf-8") as fh:
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as fh:
             user = json.load(fh)
-        cfg.update(user)
         for key in ("condition_multipliers", "grade_multipliers"):
-            if key in user:
-                cfg[key].update(user[key])
+            cfg[key].update(user.pop(key, {}))
+        cfg.update(user)
     return cfg
+
+
+def discord_webhook_url(config: dict[str, Any]) -> str:
+    """DISCORD_WEBHOOK_URL from the environment wins over config.json."""
+    return (os.getenv("DISCORD_WEBHOOK_URL") or config.get("discord_webhook_url") or "").strip()
 
 
 # ── database ──────────────────────────────────────────────────────────────────
 
-def ensure_db(path):
+def ensure_db(path: str) -> sqlite3.Connection:
+    """Open deals.db, creating the listings table or adding any missing columns.
+
+    ``scraped_at`` is the UTC time the listing was found; the column keeps its
+    original name so existing databases keep working.
+    """
     conn = sqlite3.connect(path)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS listings (
             id                   INTEGER PRIMARY KEY AUTOINCREMENT,
             url                  TEXT    UNIQUE NOT NULL,
+            item_id              TEXT,
             title                TEXT    NOT NULL,
             parsed_card_name     TEXT,
             set_name             TEXT,
             card_number          TEXT,
             match_confidence     TEXT,
             ebay_price           REAL,
+            shipping             REAL,
+            total_price          REAL,
             tcg_market_price     REAL,
             condition            TEXT,
             condition_multiplier REAL,
@@ -107,6 +136,7 @@ def ensure_db(path):
             scraped_at           TEXT    NOT NULL
         )
     """)
+    # Add columns that older databases are missing.
     existing = {row[1] for row in conn.execute("PRAGMA table_info(listings)").fetchall()}
     for col, defn in [
         ("is_graded",       "INTEGER NOT NULL DEFAULT 0"),
@@ -114,6 +144,9 @@ def ensure_db(path):
         ("grade",           "TEXT"),
         ("set_name",        "TEXT"),
         ("card_number",     "TEXT"),
+        ("item_id",         "TEXT"),
+        ("shipping",        "REAL"),
+        ("total_price",     "REAL"),
     ]:
         if col not in existing:
             conn.execute(f"ALTER TABLE listings ADD COLUMN {col} {defn}")
@@ -121,61 +154,126 @@ def ensure_db(path):
     return conn
 
 
-def _already_seen(conn, url):
+def _already_seen(conn: sqlite3.Connection, url: str) -> bool:
     return conn.execute(
         "SELECT 1 FROM listings WHERE url = ?", (url,)
     ).fetchone() is not None
 
 
-def _save_db(conn, row):
+def _save_db(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
+    values = [row.get(col) for col in _FIELDS]
+    values[_FIELDS.index("is_deal")]   = 1 if row["is_deal"] else 0
+    values[_FIELDS.index("is_graded")] = 1 if row["is_graded"] else 0
     conn.execute(
-        "INSERT OR IGNORE INTO listings "
-        "(url, title, parsed_card_name, set_name, card_number, "
-        " match_confidence, ebay_price, tcg_market_price, condition, "
-        " condition_multiplier, fair_value, discount_pct, is_deal, "
-        " is_graded, grading_company, grade, scraped_at) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (
-            row["url"], row["title"], row["parsed_card_name"],
-            row.get("set_name"), row.get("card_number"),
-            row["match_confidence"], row["ebay_price"], row["tcg_market_price"],
-            row["condition"], row["condition_multiplier"], row["fair_value"],
-            row["discount_pct"], 1 if row["is_deal"] else 0,
-            1 if row["is_graded"] else 0,
-            row.get("grading_company"), row.get("grade"),
-            row["scraped_at"],
-        ),
+        f"INSERT OR IGNORE INTO listings ({', '.join(_FIELDS)}) "
+        f"VALUES ({', '.join('?' for _ in _FIELDS)})",
+        values,
     )
     conn.commit()
 
 
 # ── csv ───────────────────────────────────────────────────────────────────────
 
-def _append_csv(path, row):
+def prepare_csv(path: str) -> None:
+    """Move aside a CSV written with a different column layout.
+
+    Appending rows with new columns under an old header would misalign
+    every column, so the old file is renamed to <name>.<timestamp>.old.csv.
+    """
+    if not os.path.exists(path):
+        return
+    with open(path, "r", newline="", encoding="utf-8") as fh:
+        header = next(csv.reader(fh), None)
+    if header and header != _FIELDS:
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        backup = f"{os.path.splitext(path)[0]}.{stamp}.old.csv"
+        os.replace(path, backup)
+        console.print(f"[dim]{path} had an older column layout; moved it to {backup}[/]")
+
+
+def _append_csv(path: str, row: dict[str, Any]) -> None:
     write_header = not os.path.exists(path)
     with open(path, "a", newline="", encoding="utf-8") as fh:
-        writer = csv.DictWriter(fh, fieldnames=_CSV_FIELDS)
+        writer = csv.DictWriter(fh, fieldnames=_FIELDS)
         if write_header:
             writer.writeheader()
-        writer.writerow({k: row.get(k, "") for k in _CSV_FIELDS})
+        writer.writerow({k: row.get(k, "") for k in _FIELDS})
+
+
+# ── scoring ───────────────────────────────────────────────────────────────────
+
+def is_excluded_title(title: str) -> bool:
+    """Foreign-language cards and proxies/customs would be compared to the wrong price."""
+    return bool(FOREIGN_LANGUAGE_RE.search(title) or REPRODUCTION_RE.search(title))
+
+
+def build_row(listing: dict[str, Any], match: MatchResult, nm_price: float,
+              config: dict[str, Any]) -> dict[str, Any]:
+    """Classify grade/condition, apply the multiplier and score one matched listing."""
+    card_id, card_name, set_name, card_number, confidence = match
+    grading_company, grade, is_graded, condition = classify_listing(
+        listing["title"],
+        condition_id=listing.get("condition_id"),
+        descriptors=listing.get("condition_descriptors"),
+        ebay_condition=listing.get("ebay_condition_raw"),
+    )
+    multiplier = resolve_multiplier(
+        is_graded, grading_company, grade, condition,
+        config["grade_multipliers"], config["condition_multipliers"],
+    )
+    total = listing.get("total", listing["price"])
+    score = score_deal(nm_price, multiplier, total, config["discount_threshold"])
+
+    return {
+        "url":                  listing["url"],
+        "item_id":              listing.get("item_id"),
+        "title":                listing["title"],
+        "parsed_card_name":     card_name,
+        "set_name":             set_name,
+        "card_number":          card_number,
+        "match_confidence":     confidence,
+        "ebay_price":           listing["price"],
+        "shipping":             listing.get("shipping"),
+        "total_price":          total,
+        "tcg_market_price":     nm_price,
+        "condition":            condition,
+        "condition_multiplier": multiplier,
+        "fair_value":           score.fair_value,
+        "discount_pct":         score.discount_pct,
+        "is_deal":              score.is_deal,
+        "is_graded":            is_graded,
+        "grading_company":      grading_company,
+        "grade":                grade,
+        "scraped_at":           datetime.now(timezone.utc).isoformat(),
+        "image_url":            listing.get("image_url"),   # alerts only, not stored
+    }
 
 
 # ── output ────────────────────────────────────────────────────────────────────
 
-def _print_deal(row):
-    cond  = row["condition"]
-    label = (
-        f"[bold yellow]{row['grading_company']} {row['grade']}[/]"
-        if row["is_graded"]
-        else f"[yellow]{cond}[/]"
-    )
+def _grade_label(row: dict[str, Any]) -> str:
+    if row["is_graded"]:
+        return " ".join(p for p in (row.get("grading_company"), row.get("grade")) if p) or "Graded"
+    return row["condition"]
+
+
+def _total_label(row: dict[str, Any]) -> str:
+    if row.get("shipping") is None:
+        return f"${row['total_price']:.2f} + shipping"
+    if row["shipping"] == 0:
+        return f"${row['total_price']:.2f} (free shipping)"
+    return f"${row['total_price']:.2f} (incl. ${row['shipping']:.2f} shipping)"
+
+
+def _print_deal(row: dict[str, Any]) -> None:
+    style = "bold yellow" if row["is_graded"] else "yellow"
     set_part = f" | [dim]{row['set_name']}[/]" if row.get("set_name") else ""
     num_part = f" [dim]#{row['card_number']}[/]" if row.get("card_number") else ""
     console.print(
         f"\n[bold red][DEAL 🔥][/] [bold]{row['parsed_card_name']}[/]"
         f"{set_part}{num_part}"
-        f" | {label}"
-        f" | eBay: [green]${row['ebay_price']:.2f}[/]"
+        f" | [{style}]{_grade_label(row)}[/]"
+        f" | eBay: [green]{_total_label(row)}[/]"
         f" | Fair Value: [cyan]${row['fair_value']:.2f}[/]"
         f" | NM: [cyan]${row['tcg_market_price']:.2f}[/]"
         f" | [bold red]{row['discount_pct']:.0f}% off[/]"
@@ -183,47 +281,100 @@ def _print_deal(row):
     console.print(f"  {row['url']}")
 
 
-# ── helpers ───────────────────────────────────────────────────────────────────
+# ── discord ───────────────────────────────────────────────────────────────────
 
-def _resolve_multiplier(is_graded, grading_company, grade, condition,
-                        grade_mults, cond_mults):
-    """Return the appropriate price multiplier depending on card type."""
-    if is_graded:
-        key     = f"{grading_company} {grade}" if grade else (grading_company or "")
-        # Try exact key, then company-only fallback
-        return float(grade_mults.get(key, grade_mults.get(grading_company or "", 1.0)))
-    return float(cond_mults.get(condition, cond_mults.get("Unknown", 0.70)))
+def _clip(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def build_discord_payload(row: dict[str, Any]) -> dict[str, Any]:
+    """Discord webhook body (one embed) for a deal row.
+
+    Limits from Discord's docs: embed title 256 chars, description 4096,
+    field values 1024.  Mentions are disabled so a listing title can never
+    ping @everyone.
+    """
+    card = row.get("parsed_card_name") or "Unknown card"
+    where = row.get("set_name") or ""
+    if row.get("card_number"):
+        where = f"{where} #{row['card_number']}".strip()
+    fields = [
+        {"name": "eBay total",   "value": _total_label(row),                  "inline": True},
+        {"name": "Fair value",   "value": f"${row['fair_value']:.2f}",        "inline": True},
+        {"name": "NM market",    "value": f"${row['tcg_market_price']:.2f}",  "inline": True},
+        {"name": "Grade / cond", "value": _grade_label(row),                  "inline": True},
+        {"name": "Match",        "value": row.get("match_confidence") or "-", "inline": True},
+    ]
+    if where:
+        fields.insert(3, {"name": "Set", "value": _clip(where, 1024), "inline": True})
+
+    embed: dict[str, Any] = {
+        "title":       _clip(f"{row['discount_pct']:.0f}% off: {card}", 256),
+        "url":         row["url"],
+        "description": _clip(row.get("title") or "", 4096),
+        "color":       0xF38BA8,
+        "fields":      fields,
+        "footer":      {"text": "eBay Pokemon deal scanner"},
+    }
+    if row.get("scraped_at"):
+        embed["timestamp"] = row["scraped_at"]
+    if row.get("image_url"):
+        embed["thumbnail"] = {"url": row["image_url"]}
+    return {"embeds": [embed], "allowed_mentions": {"parse": []}}
+
+
+def send_discord_alert(webhook_url: str, row: dict[str, Any], timeout: float = 10) -> bool:
+    """POST a deal to a Discord webhook.  Failures are reported, never fatal."""
+    try:
+        resp = requests.post(webhook_url, json=build_discord_payload(row), timeout=timeout)
+    except requests.RequestException as exc:
+        console.print(f"[dim]Discord alert failed: {exc}[/]")
+        return False
+    if resp.status_code >= 400:
+        console.print(f"[dim]Discord alert failed: HTTP {resp.status_code}[/]")
+        return False
+    return True
 
 
 # ── main loop ─────────────────────────────────────────────────────────────────
 
-def main():
-    if not os.path.exists("card_catalog.json"):
+def main() -> None:
+    load_dotenv()
+
+    if not os.path.exists(CATALOG_FILE):
         console.print(
             "[bold yellow]Run build_card_list.py first to download the card catalog.\n"
             "This is a one-time setup that takes ~2 minutes.[/]"
         )
         sys.exit(1)
 
-    config  = load_config()
+    config = load_config()
+    try:
+        get_default_client()
+    except EbayError as exc:
+        console.print(f"[bold red]{exc}[/]")
+        sys.exit(1)
+
     matcher = CardMatcher()
     pricer  = PriceLookup()
     conn    = ensure_db(DB_PATH)
+    for path in (CSV_ALL_PATH, CSV_DEAL_PATH):
+        prepare_csv(path)
 
-    cond_mults  = config["condition_multipliers"]
-    grade_mults = config["grade_multipliers"]
-    threshold   = config["discount_threshold"]
-    fetch_cond  = config.get("fetch_listing_condition", False)
+    threshold    = config["discount_threshold"]
+    fetch_cond   = config.get("fetch_listing_condition", False)
+    categories   = config.get("ebay_category_ids") or None
+    webhook      = discord_webhook_url(config)
     search_cycle = itertools.cycle(config["search_terms"])
 
-    console.print(f"\n[bold cyan]=== eBay Pokemon Card Scanner (raw + graded) ===[/]")
+    console.print("\n[bold cyan]=== eBay Pokemon Card Scanner (raw + graded) ===[/]")
     console.print(
         f"Loaded [bold]{matcher.card_count:,}[/] cards in catalog | "
-        f"Deal threshold: [bold]{threshold}%[/] below fair value\n"
+        f"Deal threshold: [bold]{threshold}%[/] below fair value"
+        + (" | Discord alerts: [bold]on[/]" if webhook else "") + "\n"
     )
 
     scanned = matched = deals = 0
-
     try:
         while True:
             term = next(search_cycle)
@@ -232,31 +383,19 @@ def main():
             listings = fetch_ebay_listings(
                 term,
                 max_results=config["max_listings_per_query"],
-                user_agent=config.get("user_agent"),
-                fetch_condition=fetch_cond,
+                category_ids=categories,
             )
 
             for listing in listings:
                 scanned += 1
-
-                if _already_seen(conn, listing["url"]):
+                if _already_seen(conn, listing["url"]) or is_excluded_title(listing["title"]):
                     continue
 
-                card_id, card_name, set_name, card_number, confidence = matcher.match(listing["title"])
+                match = matcher.match(listing["title"])
+                card_id, card_name, set_name, card_number, _ = match
                 if not card_name:
                     continue
                 matched += 1
-
-                grading_company, grade, is_graded = detect_grade(listing["title"])
-
-                condition = (
-                    "Graded"
-                    if is_graded
-                    else detect_condition(
-                        listing["title"],
-                        ebay_condition_field=listing.get("ebay_condition_raw"),
-                    )
-                )
 
                 nm_price = pricer.get_nm_price(
                     card_id=card_id, card_name=card_name,
@@ -265,54 +404,28 @@ def main():
                 if not nm_price:
                     continue
 
-                multiplier = _resolve_multiplier(
-                    is_graded, grading_company, grade,
-                    condition, grade_mults, cond_mults,
-                )
-                fair_value = round(nm_price * multiplier, 2)
-                ebay_price = listing["price"]
-                discount   = (
-                    round((fair_value - ebay_price) / fair_value * 100, 1)
-                    if fair_value > 0 else 0.0
-                )
-                is_deal = discount >= threshold
+                if fetch_cond:
+                    add_condition_details(listing)   # one getItem call per priced listing
 
-                row = {
-                    "url":                listing["url"],
-                    "title":              listing["title"],
-                    "parsed_card_name":   card_name,
-                    "set_name":           set_name,
-                    "card_number":        card_number,
-                    "match_confidence":   confidence,
-                    "ebay_price":         ebay_price,
-                    "tcg_market_price":   nm_price,
-                    "condition":          condition,
-                    "condition_multiplier": multiplier,
-                    "fair_value":         fair_value,
-                    "discount_pct":       discount,
-                    "is_deal":            is_deal,
-                    "is_graded":          is_graded,
-                    "grading_company":    grading_company,
-                    "grade":              grade,
-                    "scraped_at":         datetime.now(timezone.utc).isoformat(),
-                }
-
+                row = build_row(listing, match, nm_price, config)
                 _save_db(conn, row)
                 _append_csv(CSV_ALL_PATH, row)
 
-                if is_deal:
+                if row["is_deal"]:
                     deals += 1
                     _append_csv(CSV_DEAL_PATH, row)
                     _print_deal(row)
+                    if webhook:
+                        send_discord_alert(webhook, row)
 
-                print(f"  Scraped {scanned} | Matched {matched} | Deals {deals}", end="\r")
+                print(f"  Scanned {scanned} | Matched {matched} | Deals {deals}", end="\r")
 
             time.sleep(config["poll_interval_seconds"])
 
     except KeyboardInterrupt:
+        print(f"\n\nStopped. Scanned {scanned} | Matched {matched} | Deals {deals}")
+    finally:
         conn.close()
-        print(f"\n\nStopped. Scraped {scanned} | Matched {matched} | Deals {deals}")
-        sys.exit(0)
 
 
 if __name__ == "__main__":

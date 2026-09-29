@@ -7,16 +7,20 @@ needed to match eBay listings to specific card printings.
 Run before main.py:
     python build_card_list.py
 """
+from __future__ import annotations
+
 import json
 import time
 
 import requests
 
+from matcher import CATALOG_FILE
+
 CARDS_URL = "https://api.pokemontcg.io/v2/cards"
 PAGE_SIZE = 250
 
 
-def fetch_full_catalog():
+def fetch_full_catalog() -> list[dict]:
     catalog = []
     page    = 1
     while True:
@@ -60,17 +64,21 @@ def fetch_full_catalog():
     return catalog
 
 
-if __name__ == "__main__":
+def main() -> None:
     print("Downloading full card catalog from pokemontcg.io …")
     print("Each entry: id + name + number + set  (e.g. 'Charizard ex #199 Scarlet & Violet 151')")
     print("This takes ~2 minutes.\n")
 
     catalog = fetch_full_catalog()
 
-    with open("card_catalog.json", "w", encoding="utf-8") as fh:
+    with open(CATALOG_FILE, "w", encoding="utf-8") as fh:
         json.dump(catalog, fh, ensure_ascii=False, indent=2)
 
     unique_names = len({c["name"] for c in catalog})
     unique_sets  = len({c["set_name"] for c in catalog})
-    print(f"\nSaved {len(catalog):,} cards | {unique_names:,} unique names | {unique_sets} sets → card_catalog.json")
+    print(f"\nSaved {len(catalog):,} cards | {unique_names:,} unique names | {unique_sets} sets → {CATALOG_FILE}")
     print("Done — you can now run main.py")
+
+
+if __name__ == "__main__":
+    main()

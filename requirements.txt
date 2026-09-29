@@ -1,6 +1,5 @@
-playwright
-requests
-beautifulsoup4
-rich
-streamlit>=1.28
-pandas
+requests>=2.31
+rich>=13.0
+python-dotenv>=1.0
+pandas>=2.2
+streamlit>=1.49

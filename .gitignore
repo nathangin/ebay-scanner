@@ -1,3 +1,12 @@
+# Secrets — copy .env.example to .env and fill it in
+.env
+.env.*
+!.env.example
+
+# Virtual environments
+.venv/
+venv/
+
 # Generated data — run build_card_list.py to recreate
 card_catalog.json
 card_names.json
@@ -7,14 +16,17 @@ set_names.json
 deals.db
 deals.csv
 deals_only.csv
+*.old.csv
 cost_to_collect.csv
 
-# Price caches — run cost_to_collect.py --refresh / --fill-missing to update
+# Price caches — run cost_to_collect.py --refresh / --fill-missing, pc_cost.py to update
 price_cache.json
+asking_price_cache.json
+pricecharting_cache.json
 price_fill_cache.json
 
-# Python
+# Python / tooling
 __pycache__/
 *.pyc
 *.pyo
-.env
+.pytest_cache/

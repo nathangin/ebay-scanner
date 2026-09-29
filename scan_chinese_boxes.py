@@ -1,11 +1,21 @@
-"""One-shot scanner — Chinese Pokemon booster boxes vs PriceCharting prices."""
-import io
+"""One-shot scanner — Chinese Pokemon booster boxes vs PriceCharting prices.
+
+The reference prices below are maintained by hand (update them from
+PriceCharting as the market moves).  Searches all eBay categories, since
+sealed product is not listed under single cards.
+
+Run: python scan_chinese_boxes.py
+"""
+from __future__ import annotations
+
 import re
 import sys
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+from dotenv import load_dotenv
 
-from scraper import fetch_ebay_listings
+from deals import discount_pct
+from ebay_api import EbayError, get_default_client
+from listings import fetch_ebay_listings
 
 # (display_name, pc_price_usd, ebay_search_term)
 CHINESE_BOXES = [
@@ -23,7 +33,7 @@ CHINESE_BOXES = [
     ("CSM25C Box",         129.95, "Pokemon Chinese CSM25C booster box sealed"),
 ]
 
-DEAL_THRESHOLD = 15  # % below PriceCharting to flag as a deal
+DEAL_THRESHOLD = 15  # % below PriceCharting (compared with price + shipping) to flag as a deal
 
 # Skip listings that are clearly not sealed boxes
 _SKIP_RE = re.compile(
@@ -36,11 +46,20 @@ _SKIP_RE = re.compile(
 _SKIP_LANG_RE = re.compile(r"\bjapanese\b|\benglish\b|\bkorean\b|\btaiwan\b", re.I)
 
 
-def _skip(title):
+def _skip(title: str) -> bool:
     return bool(_SKIP_RE.search(title) or _SKIP_LANG_RE.search(title))
 
 
-def main():
+def main() -> None:
+    load_dotenv()
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    try:
+        get_default_client()
+    except EbayError as exc:
+        print(exc)
+        sys.exit(1)
+
     results = []
 
     print(f"\n{'='*72}")
@@ -54,8 +73,9 @@ def main():
         listings = fetch_ebay_listings(
             search_term,
             max_results=10,
-            sort="15",           # cheapest first
+            sort="15",             # lowest price + shipping first
             filter_bundles=False,
+            category_ids=None,     # sealed product: search all categories
         )
 
         found = skipped = 0
@@ -63,17 +83,14 @@ def main():
             if _skip(listing["title"]):
                 skipped += 1
                 continue
-            ebay_price = listing["price"]
-            if ebay_price <= 0:
-                continue
-            discount = round((pc_price - ebay_price) / pc_price * 100, 1)
             results.append({
-                "name":       name,
-                "pc_price":   pc_price,
-                "ebay_price": ebay_price,
-                "discount":   discount,
-                "url":        listing["url"],
-                "title":      listing["title"],
+                "name":           name,
+                "pc_price":       pc_price,
+                "ebay_total":     listing["total"],
+                "shipping_known": listing["shipping"] is not None,
+                "discount":       discount_pct(pc_price, listing["total"]),
+                "url":            listing["url"],
+                "title":          listing["title"],
             })
             found += 1
 
@@ -82,7 +99,7 @@ def main():
 
     # ── results table ──────────────────────────────────────────────────────────
     print(f"\n{'='*72}")
-    print(f"  {'Box':<22} {'PC Price':>9} {'eBay':>9} {'Discount':>9}  Status")
+    print(f"  {'Box':<22} {'PC Price':>9} {'eBay+ship':>10} {'Discount':>9}  Status")
     print(f"{'='*72}")
 
     results.sort(key=lambda r: r["discount"], reverse=True)
@@ -90,19 +107,24 @@ def main():
 
     for r in results:
         flag = f"DEAL {r['discount']:.0f}% off" if r["discount"] >= DEAL_THRESHOLD else ""
+        mark = " " if r["shipping_known"] else "*"
         print(
             f"  {r['name']:<22}  "
-            f"${r['pc_price']:>7.2f}   ${r['ebay_price']:>7.2f}   {r['discount']:>6.1f}%  {flag}"
+            f"${r['pc_price']:>7.2f}   ${r['ebay_total']:>7.2f}{mark}  {r['discount']:>6.1f}%  {flag}"
         )
 
-    print(f"\n  {len(results)} listings scanned | {len(deals)} deals (>={DEAL_THRESHOLD}% off PC)\n")
+    print(f"\n  {len(results)} listings scanned | {len(deals)} deals (>={DEAL_THRESHOLD}% off PC)")
+    if any(not r["shipping_known"] for r in results):
+        print("  * shipping calculated at checkout — not included")
+    print()
 
     if deals:
         print(f"{'─'*72}")
         print("  DEAL LINKS")
         print(f"{'─'*72}")
         for r in deals:
-            print(f"\n  DEAL  {r['name']} — ${r['ebay_price']:.2f} vs PC ${r['pc_price']:.2f} ({r['discount']:.0f}% off)")
+            print(f"\n  DEAL  {r['name']} — ${r['ebay_total']:.2f} vs PC ${r['pc_price']:.2f} "
+                  f"({r['discount']:.0f}% off)")
             print(f"     {r['url']}")
             print(f"     \"{r['title'][:80]}\"")
 

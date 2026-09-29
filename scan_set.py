@@ -1,13 +1,18 @@
-"""One-shot set scanner — searches eBay for every card in a set and prints deal analysis."""
-import io
+"""One-shot set scanner — searches eBay for every card in a set and prints deal analysis.
+
+Run: python scan_set.py
+"""
+from __future__ import annotations
+
 import re
 import sys
-import time
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+from dotenv import load_dotenv
 
+from deals import discount_pct
+from ebay_api import EbayError, get_default_client
+from listings import fetch_ebay_listings
 from prices import PriceLookup
-from scraper import fetch_ebay_listings
 
 SOUTHERN_ISLANDS = [
     ("si1-1",  "Mew",        "1"),
@@ -30,7 +35,7 @@ SOUTHERN_ISLANDS = [
     ("si1-18", "Primeape",   "18"),
 ]
 
-DEAL_THRESHOLD = 25  # % below NM price to flag as a deal
+DEAL_THRESHOLD = 25  # % below NM price (compared with price + shipping) to flag as a deal
 
 _SKIP_TITLE = re.compile(
     r"\bjapanese|\bjapan\b|\bJP\b|"
@@ -41,11 +46,20 @@ _SKIP_TITLE = re.compile(
 )
 
 
-def _skip(title):
+def _skip(title: str) -> bool:
     return bool(_SKIP_TITLE.search(title))
 
 
-def main():
+def main() -> None:
+    load_dotenv()
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    try:
+        get_default_client()
+    except EbayError as exc:
+        print(exc)
+        sys.exit(1)
+
     pricer  = PriceLookup()
     results = []
 
@@ -71,18 +85,15 @@ def main():
             if _skip(listing["title"]):
                 skipped += 1
                 continue
-            ebay_price = listing["price"]
-            if ebay_price <= 0:
-                continue
-            discount = round((nm_price - ebay_price) / nm_price * 100, 1)
             results.append({
-                "name":       name,
-                "number":     number,
-                "nm_price":   nm_price,
-                "ebay_price": ebay_price,
-                "discount":   discount,
-                "url":        listing["url"],
-                "title":      listing["title"],
+                "name":           name,
+                "number":         number,
+                "nm_price":       nm_price,
+                "ebay_total":     listing["total"],
+                "shipping_known": listing["shipping"] is not None,
+                "discount":       discount_pct(nm_price, listing["total"]),
+                "url":            listing["url"],
+                "title":          listing["title"],
             })
             found += 1
 
@@ -91,28 +102,32 @@ def main():
 
     # ── results table ──────────────────────────────────────────────────────────
     print(f"\n{'='*70}")
-    print(f"  {'Card':<18} {'NM Price':>9} {'eBay':>9} {'Discount':>9}  Status")
+    print(f"  {'Card':<18} {'NM Price':>9} {'eBay+ship':>10} {'Discount':>9}  Status")
     print(f"{'='*70}")
 
     results.sort(key=lambda r: r["discount"], reverse=True)
-
     deals = [r for r in results if r["discount"] >= DEAL_THRESHOLD]
 
     for r in results:
         flag = f"🔥 {r['discount']:.0f}% off" if r["discount"] >= DEAL_THRESHOLD else ""
+        mark = " " if r["shipping_known"] else "*"
         print(
             f"  #{r['number']:<3} {r['name']:<14}  "
-            f"${r['nm_price']:>7.2f}   ${r['ebay_price']:>7.2f}   {r['discount']:>6.1f}%  {flag}"
+            f"${r['nm_price']:>7.2f}   ${r['ebay_total']:>7.2f}{mark}  {r['discount']:>6.1f}%  {flag}"
         )
 
-    print(f"\n  {len(results)} listings scanned | {len(deals)} deals (≥{DEAL_THRESHOLD}% off NM)\n")
+    print(f"\n  {len(results)} listings scanned | {len(deals)} deals (≥{DEAL_THRESHOLD}% off NM)")
+    if any(not r["shipping_known"] for r in results):
+        print("  * shipping calculated at checkout — not included")
+    print()
 
     if deals:
         print(f"{'─'*70}")
         print("  DEAL LINKS")
         print(f"{'─'*70}")
         for r in deals:
-            print(f"\n  🔥 #{r['number']} {r['name']} — ${r['ebay_price']:.2f} vs NM ${r['nm_price']:.2f} ({r['discount']:.0f}% off)")
+            print(f"\n  🔥 #{r['number']} {r['name']} — ${r['ebay_total']:.2f} vs NM "
+                  f"${r['nm_price']:.2f} ({r['discount']:.0f}% off)")
             print(f"     {r['url']}")
             print(f"     \"{r['title'][:80]}\"")
 
