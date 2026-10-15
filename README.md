@@ -341,6 +341,9 @@ pip install -r requirements-dev.txt
 python -m pytest
 ```
 
+GitHub Actions runs the same suite on Python 3.11 and 3.13 for every push and
+pull request (`.github/workflows/tests.yml`).
+
 The suite runs offline. Every HTTP call (eBay OAuth, search and getItem,
 pokemontcg.io, PriceCharting, Discord) is mocked. It covers token caching and
 refresh, retries and backoff, request building and response mapping, sort
