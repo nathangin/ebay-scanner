@@ -285,9 +285,9 @@ def main() -> None:
             "tcg_market_price": st.column_config.NumberColumn("NM Market",   format="$%.2f", width="small"),
             "fair_value":       st.column_config.NumberColumn("Fair Value",  format="$%.2f", width="small"),
             "discount_pct":     st.column_config.NumberColumn("Discount",    format="%.1f%%", width="small"),
-            "resale_profit":    st.column_config.NumberColumn("Resale profit", format="$%.2f", width="small",
-                                                              help="Reselling at fair value on eBay, after its "
-                                                                   "fees and your postage"),
+            "resale_profit":    st.column_config.NumberColumn("Profit",      format="$%.2f", width="small",
+                                                              help="Resale profit: selling at fair value on eBay, "
+                                                                   "after its fees and your postage"),
             "match_confidence": st.column_config.TextColumn("Match",         width="small"),
             "url":              st.column_config.LinkColumn("eBay Link",     width="medium"),
             "scraped_at":       st.column_config.DatetimeColumn("Found (UTC)", format="MMM D HH:mm", width="small"),
