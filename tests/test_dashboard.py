@@ -22,7 +22,7 @@ def _row(n, **overrides):
         "parsed_card_name": "Charizard", "set_name": "Base", "card_number": "4",
         "match_confidence": "exact", "ebay_price": 100.0, "shipping": 5.0, "total_price": 105.0,
         "tcg_market_price": 200.0, "condition": "NM", "condition_multiplier": 1.0,
-        "fair_value": 200.0, "discount_pct": 47.5, "is_deal": True, "is_graded": False,
+        "fair_value": 200.0, "discount_pct": 47.5, "resale_profit": 64.49, "is_deal": True, "is_graded": False,
         "grading_company": None, "grade": None, "scraped_at": "2026-09-28T12:00:00+00:00",
     }
     row.update(overrides)

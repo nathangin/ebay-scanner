@@ -25,6 +25,7 @@ def _row(**overrides):
         "condition_multiplier": 1.0,
         "fair_value": 400.0,
         "discount_pct": 53.8,
+        "resale_profit": None,
         "is_deal": True,
         "is_graded": False,
         "grading_company": None,
@@ -56,6 +57,15 @@ def test_discord_payload():
         "Grade / cond": "NM",
         "Match":        "exact",
     }
+
+
+def test_discord_payload_shows_resale_profit():
+    [embed] = main.build_discord_payload(_row(resale_profit=159.26))["embeds"]
+    fields = {f["name"]: f["value"] for f in embed["fields"]}
+    assert fields["Resale profit"] == "$159.26 after eBay fees + postage"
+    # calculated shipping: the cost is not final, so the profit is approximate
+    [embed] = main.build_discord_payload(_row(resale_profit=-2.5, shipping=None))["embeds"]
+    assert {f["name"]: f["value"] for f in embed["fields"]}["Resale profit"] == "~-$2.50 after eBay fees + postage"
 
 
 def test_discord_payload_graded_unknown_shipping_and_limits():
@@ -115,12 +125,12 @@ def test_old_database_is_migrated_and_rows_saved(tmp_path):
 
     conn = main.ensure_db(path)
     columns = {r[1] for r in conn.execute("PRAGMA table_info(listings)")}
-    assert {"item_id", "shipping", "total_price", "is_graded", "set_name"} <= columns
+    assert {"item_id", "shipping", "total_price", "is_graded", "set_name", "resale_profit"} <= columns
 
-    main._save_db(conn, _row())
+    main._save_db(conn, _row(resale_profit=159.26))
     assert main._already_seen(conn, _row()["url"])
-    saved = conn.execute("SELECT total_price, shipping, is_deal, is_graded FROM listings").fetchone()
-    assert saved == (185.0, 5.0, 1, 0)
+    saved = conn.execute("SELECT total_price, shipping, is_deal, is_graded, resale_profit FROM listings").fetchone()
+    assert saved == (185.0, 5.0, 1, 0, 159.26)
     conn.close()
 
 
