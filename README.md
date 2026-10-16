@@ -4,7 +4,8 @@ Finds underpriced Pokémon cards on eBay. The scanner reads new Buy It Now listi
 through eBay's official **Browse API**, matches each listing title to a specific
 printing in the [pokemontcg.io](https://pokemontcg.io) card catalog, prices it with
 TCGPlayer market data, adjusts for the card's condition or professional grade, and
-flags listings whose **total cost (price + shipping)** is well below fair value.
+flags listings whose **total cost (price + shipping)** is well below fair value
+and that would still turn a profit if resold, after eBay's fees and postage.
 Results go to SQLite and CSV, a Streamlit dashboard, and (optionally) Discord.
 
 ![Streamlit dashboard](docs/dashboard.png)
@@ -49,10 +50,13 @@ eBay Browse API ─► listings.py ─► matcher.py ───► prices.py ─�
 ### How deals are scored
 
 ```text
-fair value = NM market price × multiplier
-cost       = item price + shipping        (shipping only when it is a fixed amount)
-discount % = (fair value − cost) / fair value × 100
-deal       = discount % ≥ discount_threshold   (default 30)
+fair value    = NM market price × multiplier
+cost          = item price + shipping        (shipping only when it is a fixed amount)
+discount %    = (fair value − cost) / fair value × 100
+eBay fees     = fair value × (1 + sales tax) × fee % + per-order fee
+resale profit = fair value − eBay fees − postage − cost
+deal          = discount % ≥ discount_threshold (default 30)
+                and resale profit ≥ resale.min_profit (default $5)
 ```
 
 The multiplier comes from `config.json`: `grade_multipliers` for graded cards
@@ -63,6 +67,27 @@ The multiplier comes from `config.json`: `grade_multipliers` for graded cards
 Listed at $45 + $5 shipping → cost $50 → discount (70 − 50) / 70 = 28.6%. That is
 **not** a deal at the default 30% threshold. On item price alone it would have
 scored 35.7%, which is why shipping is included.
+
+**Resale profit** is what you would keep if you sold the card again at fair value on
+eBay, with free shipping to the buyer. eBay takes a final value fee on everything the
+buyer pays, sales tax included, plus a per-order fee, and you pay the postage. A big
+discount on a cheap card often leaves nothing. 50% off a $12 card costs $6, and
+selling it at $12 nets $12 − $1.75 fee − $0.40 order fee − $1.00 postage = $8.85, so
+the profit is $2.85. It is shown but not flagged. 35% off a $60 card (cost $39) makes
+$10.87, so it is flagged. The defaults (`resale` in `config.json`):
+
+| Key | Default | Meaning |
+|---|---|---|
+| `fee_pct` | `13.6` | eBay's final value fee for trading cards without a store. Sources give 13.25-13.6%; this is the conservative end. Store subscribers pay less, so check your own rate |
+| `sales_tax_pct` | `7.0` | Typical US sales tax. eBay charges its fee on the tax too |
+| `order_fee` / `order_fee_small` | `0.40` / `0.30` | Per-order fee on orders over $10 / of $10 or less |
+| `postage_raw` / `postage_graded` | `1.00` / `5.00` | What you pay to send a raw card (envelope, toploader) / a slab (tracked) |
+| `min_profit` | `5.00` | Minimum resale profit for a deal. `null` flags on discount alone (the profit is still shown) |
+
+The estimate is only as good as the fair value. TCGPlayer market prices are recent
+sales, but graded fair values come from the fixed `grade_multipliers`, so check
+recent sold listings before buying a slab to flip. When shipping is calculated at
+checkout, the cost is missing its shipping, so the profit is overstated (marked `~`).
 
 ## Setup
 
@@ -137,7 +162,7 @@ Deals also go to `deals_only.csv`, the console, and Discord if configured. Examp
 console line (illustrative):
 
 ```text
-[DEAL 🔥] Mew | Southern Islands #1 | NM | eBay: $15.75 (incl. $1.25 shipping) | Fair Value: $31.00 | NM: $31.00 | 49% off
+[DEAL 🔥] Mew | Southern Islands #1 | NM | eBay: $15.75 (incl. $1.25 shipping) | Fair Value: $31.00 | NM: $31.00 | 49% off | Resale profit: $9.34
   https://www.ebay.com/itm/123456789012
 ```
 
@@ -184,7 +209,8 @@ streamlit run dashboard.py
 - Filters: deals only, raw/graded, condition, grading company, grade, minimum
   discount, total price range, card name, match confidence
 - Sortable table with item price, shipping, total, NM market price, fair value,
-  discount and a link to each listing
+  discount, resale profit and a link to each listing (the top 5 deals are the ones with
+  the biggest resale profit)
 - CSV download of the filtered rows or the deals only
 
 It reads `deals.db` from the current folder and caches it for 30 seconds. Click
@@ -197,6 +223,7 @@ It reads `deals.db` from the current folder and caches it for 30 seconds. Click
 | Key | Default | Meaning |
 |---|---|---|
 | `discount_threshold` | `30` | Minimum % below fair value to count as a deal |
+| `resale` | see [How deals are scored](#how-deals-are-scored) | eBay fees, postage and the minimum resale profit for a deal |
 | `search_terms` | 8 queries | eBay searches `main.py` cycles through |
 | `condition_multipliers` | NM 1.0, LP 0.70, MP 0.45, HP 0.25, DMG 0.10, Unknown 0.70 | Raw-card multiplier on the NM price |
 | `grade_multipliers` | PSA 10 3.0, PSA 9 1.5, BGS 9.5 4.0, ... | Graded-card multiplier. Keys are `"COMPANY GRADE"`; a company-only key (`"CGC"`) works as a fallback; unknown grades use 1.0 |
@@ -244,7 +271,7 @@ DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
 ```
 
 `main.py` then posts one embed per new deal: card, discount, eBay total, fair value,
-NM price, set, grade/condition, match confidence and the listing photo. It uses
+NM price, set, grade/condition, match confidence, resale profit and the listing photo. It uses
 plain `requests`; @mentions are disabled so a listing title can't ping anyone. A
 failed alert is logged and never stops the scanner. Alerts are off when no URL is set.
 
@@ -340,6 +367,9 @@ ebay-scanner/
 pip install -r requirements-dev.txt
 python -m pytest
 ```
+
+GitHub Actions runs the same suite on Python 3.11 and 3.13 for every push and
+pull request (`.github/workflows/tests.yml`).
 
 The suite runs offline. Every HTTP call (eBay OAuth, search and getItem,
 pokemontcg.io, PriceCharting, Discord) is mocked. It covers token caching and

@@ -74,7 +74,7 @@ def load_data() -> pd.DataFrame:
 
     # Ensure newer columns exist even on older databases
     for col in ("grading_company", "grade", "set_name", "card_number",
-                "shipping", "total_price", "is_graded"):
+                "shipping", "total_price", "is_graded", "resale_profit"):
         if col not in df.columns:
             df[col] = None
 
@@ -82,7 +82,7 @@ def load_data() -> pd.DataFrame:
     df["is_deal"]    = df["is_deal"].fillna(0).astype(bool)
     df["is_graded"]  = df["is_graded"].fillna(0).astype(bool)
     for col in ("ebay_price", "shipping", "total_price", "tcg_market_price",
-                "fair_value", "discount_pct"):
+                "fair_value", "discount_pct", "resale_profit"):
         df[col] = pd.to_numeric(df[col], errors="coerce")
     # Rows saved before shipping was tracked: total = item price
     df["total_price"] = df["total_price"].fillna(df["ebay_price"])
@@ -124,10 +124,14 @@ def main() -> None:
     # ── top deals callout ─────────────────────────────────────────────────────
     if len(deals_df):
         with st.expander("🔥 Top 5 Deals Right Now", expanded=True):
-            top = deals_df.nlargest(5, "discount_pct")
+            # Biggest resale profit first; databases from before it was tracked fall back to discount.
+            by = "resale_profit" if deals_df["resale_profit"].notna().any() else "discount_pct"
+            top = deals_df.nlargest(5, by)
             cols = st.columns(len(top))
             for col, (_, row) in zip(cols, top.iterrows()):
                 ship = "+ shipping" if pd.isna(row["shipping"]) else "incl. shipping"
+                profit = ("" if pd.isna(row["resale_profit"])
+                          else f'<br>Resale profit: <b>${row["resale_profit"]:.2f}</b> after fees')
                 with col:
                     st.markdown(
                         f'<div class="tdcard">'
@@ -137,6 +141,7 @@ def main() -> None:
                         f'eBay: <b>${row["total_price"]:.2f}</b> {ship}<br>'
                         f'Fair Value: ${row["fair_value"]:.2f}<br>'
                         f'NM Price: ${row["tcg_market_price"]:.2f}'
+                        f'{profit}'
                         f'</div>'
                         f'<div class="pct">▼ {row["discount_pct"]:.0f}% off</div>'
                         f'</div>',
@@ -200,9 +205,10 @@ def main() -> None:
         st.subheader("Sort")
         sort_col = st.selectbox(
             "Sort by",
-            ["discount_pct", "total_price", "tcg_market_price", "fair_value", "scraped_at"],
+            ["discount_pct", "resale_profit", "total_price", "tcg_market_price", "fair_value", "scraped_at"],
             format_func=lambda x: {
                 "discount_pct":     "Discount %",
+                "resale_profit":    "Resale profit",
                 "total_price":      "eBay Total",
                 "tcg_market_price": "NM Market Price",
                 "fair_value":       "Fair Value",
@@ -257,7 +263,7 @@ def main() -> None:
     display = filt[[
         "parsed_card_name", "set_name", "card_number", "grade_cond", "ebay_price",
         "shipping", "total_price", "tcg_market_price", "fair_value", "discount_pct",
-        "match_confidence", "url", "scraped_at",
+        "resale_profit", "match_confidence", "url", "scraped_at",
     ]].copy()
     # Name-only matches have no set or number; show a dash instead of "None".
     for col in ("set_name", "card_number"):
@@ -279,6 +285,9 @@ def main() -> None:
             "tcg_market_price": st.column_config.NumberColumn("NM Market",   format="$%.2f", width="small"),
             "fair_value":       st.column_config.NumberColumn("Fair Value",  format="$%.2f", width="small"),
             "discount_pct":     st.column_config.NumberColumn("Discount",    format="%.1f%%", width="small"),
+            "resale_profit":    st.column_config.NumberColumn("Profit",      format="$%.2f", width="small",
+                                                              help="Resale profit: selling at fair value on eBay, "
+                                                                   "after its fees and your postage"),
             "match_confidence": st.column_config.TextColumn("Match",         width="small"),
             "url":              st.column_config.LinkColumn("eBay Link",     width="medium"),
             "scraped_at":       st.column_config.DatetimeColumn("Found (UTC)", format="MMM D HH:mm", width="small"),

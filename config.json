@@ -35,5 +35,14 @@
   "max_listings_per_query": 25,
   "fetch_listing_condition": false,
   "ebay_category_ids": ["183454"],
-  "discord_webhook_url": ""
+  "discord_webhook_url": "",
+  "resale": {
+    "fee_pct": 13.6,
+    "sales_tax_pct": 7.0,
+    "order_fee": 0.40,
+    "order_fee_small": 0.30,
+    "postage_raw": 1.00,
+    "postage_graded": 5.00,
+    "min_profit": 5.00
+  }
 }

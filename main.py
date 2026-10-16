@@ -3,7 +3,9 @@
 Cycles through the search terms in config.json, matches each new eBay listing
 to a card in the pokemontcg.io catalog, prices it, and flags listings whose
 total cost (price + shipping) is at least `discount_threshold`% below fair
-value.  Results go to deals.db (SQLite), deals.csv and deals_only.csv.
+value and that would still make `resale.min_profit` dollars if resold at fair
+value after eBay's fees and postage.  Results go to deals.db (SQLite),
+deals.csv and deals_only.csv.
 
 First run:
     python build_card_list.py   # one-time, ~2 minutes
@@ -25,7 +27,7 @@ import requests
 from dotenv import load_dotenv
 from rich.console import Console
 
-from deals import resolve_multiplier, score_deal
+from deals import DEFAULT_RESALE, resolve_multiplier, score_deal
 from ebay_api import CCG_INDIVIDUAL_CARDS_CATEGORY, EbayError, get_default_client
 from listings import (
     FOREIGN_LANGUAGE_RE,
@@ -68,13 +70,14 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     "fetch_listing_condition": False,
     "ebay_category_ids": [CCG_INDIVIDUAL_CARDS_CATEGORY],
     "discord_webhook_url": "",
+    "resale": dict(DEFAULT_RESALE),
 }
 
 # Column order for deals.db inserts and both CSV files.
 _FIELDS = [
     "url", "item_id", "title", "parsed_card_name", "set_name", "card_number",
     "match_confidence", "ebay_price", "shipping", "total_price", "tcg_market_price",
-    "condition", "condition_multiplier", "fair_value", "discount_pct",
+    "condition", "condition_multiplier", "fair_value", "discount_pct", "resale_profit",
     "is_deal", "is_graded", "grading_company", "grade", "scraped_at",
 ]
 
@@ -84,15 +87,16 @@ console = Console()
 # ── config ────────────────────────────────────────────────────────────────────
 
 def load_config(path: str = CONFIG_PATH) -> dict[str, Any]:
-    """Defaults overlaid with config.json (the multiplier tables are merged key by key)."""
+    """Defaults overlaid with config.json (the multiplier and resale tables are merged key by key)."""
     cfg = _DEFAULT_CONFIG.copy()
     cfg["condition_multipliers"] = _DEFAULT_CONFIG["condition_multipliers"].copy()
     cfg["grade_multipliers"]     = _DEFAULT_CONFIG["grade_multipliers"].copy()
+    cfg["resale"]                = _DEFAULT_CONFIG["resale"].copy()
     if os.path.exists(path):
         with open(path, "r", encoding="utf-8") as fh:
             user = json.load(fh)
-        for key in ("condition_multipliers", "grade_multipliers"):
-            cfg[key].update(user.pop(key, {}))
+        for key in ("condition_multipliers", "grade_multipliers", "resale"):
+            cfg[key].update(user.pop(key, None) or {})
         cfg.update(user)
     return cfg
 
@@ -129,6 +133,7 @@ def ensure_db(path: str) -> sqlite3.Connection:
             condition_multiplier REAL,
             fair_value           REAL,
             discount_pct         REAL,
+            resale_profit        REAL,
             is_deal              INTEGER NOT NULL DEFAULT 0,
             is_graded            INTEGER NOT NULL DEFAULT 0,
             grading_company      TEXT,
@@ -147,6 +152,7 @@ def ensure_db(path: str) -> sqlite3.Connection:
         ("item_id",         "TEXT"),
         ("shipping",        "REAL"),
         ("total_price",     "REAL"),
+        ("resale_profit",   "REAL"),
     ]:
         if col not in existing:
             conn.execute(f"ALTER TABLE listings ADD COLUMN {col} {defn}")
@@ -222,7 +228,8 @@ def build_row(listing: dict[str, Any], match: MatchResult, nm_price: float,
         config["grade_multipliers"], config["condition_multipliers"],
     )
     total = listing.get("total", listing["price"])
-    score = score_deal(nm_price, multiplier, total, config["discount_threshold"])
+    score = score_deal(nm_price, multiplier, total, config["discount_threshold"],
+                       graded=is_graded, resale=config.get("resale"))
 
     return {
         "url":                  listing["url"],
@@ -240,6 +247,7 @@ def build_row(listing: dict[str, Any], match: MatchResult, nm_price: float,
         "condition_multiplier": multiplier,
         "fair_value":           score.fair_value,
         "discount_pct":         score.discount_pct,
+        "resale_profit":        score.resale_profit,
         "is_deal":              score.is_deal,
         "is_graded":            is_graded,
         "grading_company":      grading_company,
@@ -265,10 +273,21 @@ def _total_label(row: dict[str, Any]) -> str:
     return f"${row['total_price']:.2f} (incl. ${row['shipping']:.2f} shipping)"
 
 
+def _profit_label(row: dict[str, Any]) -> str:
+    """Resale profit after fees and postage; '~' when shipping is not known yet."""
+    profit = row.get("resale_profit")
+    if profit is None:
+        return ""
+    approx = "~" if row.get("shipping") is None else ""
+    sign = "-" if profit < 0 else ""
+    return f"{approx}{sign}${abs(profit):.2f}"
+
+
 def _print_deal(row: dict[str, Any]) -> None:
     style = "bold yellow" if row["is_graded"] else "yellow"
     set_part = f" | [dim]{row['set_name']}[/]" if row.get("set_name") else ""
     num_part = f" [dim]#{row['card_number']}[/]" if row.get("card_number") else ""
+    profit = _profit_label(row)
     console.print(
         f"\n[bold red][DEAL 🔥][/] [bold]{row['parsed_card_name']}[/]"
         f"{set_part}{num_part}"
@@ -277,6 +296,7 @@ def _print_deal(row: dict[str, Any]) -> None:
         f" | Fair Value: [cyan]${row['fair_value']:.2f}[/]"
         f" | NM: [cyan]${row['tcg_market_price']:.2f}[/]"
         f" | [bold red]{row['discount_pct']:.0f}% off[/]"
+        + (f" | Resale profit: [bold green]{profit}[/]" if profit else "")
     )
     console.print(f"  {row['url']}")
 
@@ -307,6 +327,9 @@ def build_discord_payload(row: dict[str, Any]) -> dict[str, Any]:
     ]
     if where:
         fields.insert(3, {"name": "Set", "value": _clip(where, 1024), "inline": True})
+    if row.get("resale_profit") is not None:
+        fields.append({"name": "Resale profit", "value": _profit_label(row) + " after eBay fees + postage",
+                       "inline": True})
 
     embed: dict[str, Any] = {
         "title":       _clip(f"{row['discount_pct']:.0f}% off: {card}", 256),
@@ -362,6 +385,7 @@ def main() -> None:
         prepare_csv(path)
 
     threshold    = config["discount_threshold"]
+    min_profit   = (config.get("resale") or {}).get("min_profit")
     fetch_cond   = config.get("fetch_listing_condition", False)
     categories   = config.get("ebay_category_ids") or None
     webhook      = discord_webhook_url(config)
@@ -371,6 +395,7 @@ def main() -> None:
     console.print(
         f"Loaded [bold]{matcher.card_count:,}[/] cards in catalog | "
         f"Deal threshold: [bold]{threshold}%[/] below fair value"
+        + (f" and [bold]${min_profit:.2f}[/]+ resale profit after fees" if min_profit is not None else "")
         + (" | Discord alerts: [bold]on[/]" if webhook else "") + "\n"
     )
 
